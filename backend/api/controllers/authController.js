@@ -2,6 +2,12 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../../lib/prisma.js';
+import {
+  getAuthorizationUrl,
+  handleCallback,
+  getLinkedAccounts as getLinkedAccountsService,
+  unlinkAccount as unlinkAccountService,
+} from '../../services/oauthService.js';
 
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
 
@@ -231,4 +237,95 @@ export const logout = async (req, res) => {
   }
 };
 
-export default { register, login, refresh, logout };
+// ── OAuth2 handlers ───────────────────────────────────────────────────────────
+
+const SUPPORTED_PROVIDERS = ['google', 'github'];
+
+/**
+ * GET /api/auth/oauth/:provider
+ * Redirect the user to the provider's authorization page.
+ */
+export const oauthRedirect = (req, res) => {
+  try {
+    const { provider } = req.params;
+    if (!SUPPORTED_PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: `Unsupported provider: ${provider}` });
+    }
+
+    const tenantId = req.tenant?.id;
+    if (!tenantId) return res.status(400).json({ error: 'Tenant context is required' });
+
+    const { url } = getAuthorizationUrl(provider, tenantId);
+    res.redirect(url);
+  } catch (err) {
+    console.error('[OAuth Redirect] Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * GET /api/auth/oauth/:provider/callback
+ * Handle the authorization code callback from the provider.
+ */
+export const oauthCallback = async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const { code, state, error: providerError } = req.query;
+
+    if (providerError) {
+      return res.status(400).json({ error: `Provider error: ${providerError}` });
+    }
+
+    if (!code || !state) {
+      return res.status(400).json({ error: 'Missing code or state parameter' });
+    }
+
+    if (!SUPPORTED_PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: `Unsupported provider: ${provider}` });
+    }
+
+    const ipAddress = req.ip || req.headers['x-forwarded-for'];
+    const result = await handleCallback(provider, code, state, ipAddress);
+
+    // In a real app you'd redirect to the frontend with tokens in query params
+    // or set an httpOnly cookie. Returning JSON here for API consumers.
+    res.json(result);
+  } catch (err) {
+    console.error('[OAuth Callback] Error:', err);
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+};
+
+/**
+ * GET /api/auth/linked-accounts
+ * List all OAuth providers linked to the authenticated user.
+ */
+export const getLinkedAccounts = async (req, res) => {
+  try {
+    const accounts = await getLinkedAccountsService(req.user.userId);
+    res.json(accounts);
+  } catch (err) {
+    console.error('[Linked Accounts] Error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+/**
+ * DELETE /api/auth/linked-accounts/:provider
+ * Unlink a social login provider from the authenticated user.
+ */
+export const unlinkAccount = async (req, res) => {
+  try {
+    const { provider } = req.params;
+    if (!SUPPORTED_PROVIDERS.includes(provider)) {
+      return res.status(400).json({ error: `Unsupported provider: ${provider}` });
+    }
+    await unlinkAccountService(req.user.userId, provider);
+    res.json({ message: `${provider} account unlinked successfully` });
+  } catch (err) {
+    console.error('[Unlink Account] Error:', err);
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
+};
+
+export default { register, login, refresh, logout, oauthRedirect, oauthCallback, getLinkedAccounts, unlinkAccount };

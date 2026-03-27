@@ -55,15 +55,43 @@ model User {
   id           Int      @id @default(autoincrement())
   tenantId     String   @map("tenant_id")
   email        String   @unique
-  password     String
+  /// Nullable — OAuth-only accounts have no password
+  password     String?
   refreshToken String?  @map("refresh_token")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  oauthAccounts OAuthAccount[]
 
   @@index([tenantId, createdAt(sort: Desc)])
   @@map("users")
+}
+
+// ── OAuth Accounts ────────────────────────────────────────────────────────────
+
+/// Linked social login accounts for a user (Google, GitHub, etc.)
+model OAuthAccount {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  /// Provider name: "google" | "github"
+  provider       String
+  /// Provider's unique user ID (sub / user.id)
+  providerUserId String   @map("provider_user_id")
+  /// Latest access token from the provider (encrypted at rest in production)
+  accessToken    String?  @map("access_token")
+  /// Display name from provider profile
+  name           String?
+  /// Avatar URL from provider profile
+  avatarUrl      String?  @map("avatar_url")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("oauth_accounts")
 }
 
 // ── Escrows ───────────────────────────────────────────────────────────────────
